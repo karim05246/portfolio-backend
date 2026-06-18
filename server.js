@@ -35,6 +35,7 @@ app.use(cors(corsOptions));
 let transporter = null;
 let transporterError = null;
 let transporterReady = false;
+let emailTransport = 'none';
 
 function withTimeout(promise, ms, label) {
   return Promise.race([
@@ -53,11 +54,76 @@ function hasRealEmailCredentials() {
   );
 }
 
+function getEmailPass() {
+  return (process.env.EMAIL_PASS || '').replace(/\s/g, '');
+}
+
+function createResendTransporter() {
+  const apiKey = process.env.RESEND_API_KEY;
+  const defaultFrom =
+    process.env.EMAIL_FROM ||
+    `"Portfolio Contact" <onboarding@resend.dev>`;
+
+  return {
+    name: 'resend-http',
+    async verify() {
+      return true;
+    },
+    async sendMail(mailOptions) {
+      const to = Array.isArray(mailOptions.to)
+        ? mailOptions.to
+        : String(mailOptions.to || '')
+            .split(',')
+            .map((v) => v.trim())
+            .filter(Boolean);
+
+      const payload = {
+        from: mailOptions.from || defaultFrom,
+        to,
+        subject: mailOptions.subject,
+        html: mailOptions.html,
+        text: mailOptions.text,
+      };
+
+      if (mailOptions.replyTo) {
+        payload.reply_to = mailOptions.replyTo;
+      }
+
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.message || data.error || `Resend API error (${response.status})`);
+      }
+
+      return { messageId: data.id || 'resend-sent' };
+    },
+  };
+}
+
 async function setupTransporter() {
   transporterReady = false;
   transporterError = null;
+  transporter = null;
+  emailTransport = 'none';
 
   try {
+    if (process.env.RESEND_API_KEY) {
+      transporter = createResendTransporter();
+      emailTransport = 'resend';
+      transporterReady = true;
+      console.log('Using Resend HTTP API (Render-compatible).');
+      return;
+    }
+
     if (hasRealEmailCredentials()) {
       transporter = nodemailer.createTransport({
         host: 'smtp.gmail.com',
@@ -65,12 +131,13 @@ async function setupTransporter() {
         secure: false,
         auth: {
           user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS.replace(/\s/g, ''),
+          pass: getEmailPass(),
         },
         connectionTimeout: SMTP_TIMEOUT_MS,
         greetingTimeout: SMTP_TIMEOUT_MS,
         socketTimeout: SMTP_TIMEOUT_MS,
       });
+      emailTransport = 'gmail-smtp';
       console.log('Using Gmail SMTP credentials from environment.');
     } else {
       console.log('No email credentials found. Creating Ethereal test account...');
@@ -92,6 +159,7 @@ async function setupTransporter() {
         greetingTimeout: SMTP_TIMEOUT_MS,
         socketTimeout: SMTP_TIMEOUT_MS,
       });
+      emailTransport = 'ethereal';
       console.log('Using Ethereal test SMTP account.');
     }
 
@@ -99,7 +167,6 @@ async function setupTransporter() {
       await withTimeout(transporter.verify(), SMTP_TIMEOUT_MS, 'SMTP verify');
       console.log('Email transporter verified.');
     } catch (verifyError) {
-      // Verify can fail on cold start; allow sendMail to attempt delivery anyway
       console.warn('SMTP verify skipped/failed:', verifyError.message);
     }
 
@@ -124,6 +191,7 @@ async function startServer() {
     res.status(200).json({
       ok: true,
       emailReady: transporterReady,
+      transport: emailTransport,
       emailError: transporterError ? transporterError.message : null,
     });
   });
@@ -154,8 +222,14 @@ async function startServer() {
         });
       }
 
+      const sender =
+        process.env.EMAIL_FROM ||
+        (process.env.EMAIL_USER
+          ? `"Portfolio Contact" <${process.env.EMAIL_USER}>`
+          : '"Portfolio Contact" <onboarding@resend.dev>');
+
       const mailOptions = {
-        from: `"Portfolio Contact" <${process.env.EMAIL_USER || receiver}>`,
+        from: sender,
         replyTo: email,
         to: receiver,
         subject: `New contact from ${name} via Portfolio`,
@@ -163,7 +237,7 @@ async function startServer() {
         html: `<p>You have received a new message from your portfolio website.</p>
                <p><strong>Name:</strong> ${name}</p>
                <p><strong>Email:</strong> ${email}</p>
-               <p><strong>Message:</strong><br/>${message}</p>`,
+               <p><strong>Message:</strong><br/>${message.replace(/\n/g, '<br/>')}</p>`,
       };
 
       const info = await withTimeout(
@@ -185,10 +259,19 @@ async function startServer() {
         previewUrl: previewUrl || null,
       });
     } catch (error) {
-      console.error('Error in /api/contact:', error);
+      console.error('Error in /api/contact:', error.message || error);
+
+      const hint =
+        emailTransport === 'gmail-smtp' && process.env.RENDER
+          ? ' Render free tier blocks SMTP. Add RESEND_API_KEY in Render environment variables.'
+          : '';
+
       return res.status(500).json({
         success: false,
         error: 'Failed to send email. Please try again later.',
+        ...(process.env.NODE_ENV !== 'production' && {
+          details: `${error.message || error}${hint}`,
+        }),
       });
     }
   });
