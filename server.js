@@ -95,7 +95,14 @@ async function setupTransporter() {
       console.log('Using Ethereal test SMTP account.');
     }
 
-    await withTimeout(transporter.verify(), SMTP_TIMEOUT_MS, 'SMTP verify');
+    try {
+      await withTimeout(transporter.verify(), SMTP_TIMEOUT_MS, 'SMTP verify');
+      console.log('Email transporter verified.');
+    } catch (verifyError) {
+      // Verify can fail on cold start; allow sendMail to attempt delivery anyway
+      console.warn('SMTP verify skipped/failed:', verifyError.message);
+    }
+
     transporterReady = true;
     console.log('Email transporter is ready.');
   } catch (error) {
