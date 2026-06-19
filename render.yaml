@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: portfolio-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RECEIVER_EMAIL
+        value: medkarimelbourai@gmail.com
+      - key: EMAIL_FROM
+        value: Portfolio Contact <onboarding@resend.dev>
+      - key: FRONTEND_URL
+        value: https://karimportfolio-blush.vercel.app
+      - key: NODE_ENV
+        value: production

@@ -116,11 +116,22 @@ async function setupTransporter() {
   emailTransport = 'none';
 
   try {
-    if (process.env.RESEND_API_KEY) {
+    const onRender = Boolean(process.env.RENDER);
+    const resendKey = (process.env.RESEND_API_KEY || '').trim();
+
+    if (resendKey) {
       transporter = createResendTransporter();
       emailTransport = 'resend';
       transporterReady = true;
       console.log('Using Resend HTTP API (Render-compatible).');
+      return;
+    }
+
+    if (onRender) {
+      transporterError = new Error(
+        'RESEND_API_KEY is missing on Render. Gmail SMTP is blocked on the free tier.'
+      );
+      console.error(transporterError.message);
       return;
     }
 
